@@ -5,9 +5,11 @@ import sys
 
 import requests
 import telegram
-from telegram import TelegramError
 
 from dotenv import load_dotenv
+
+from exceptions import (InterceptRequestException,
+                        JSONError, APITypeError, APIKeyError)
 
 load_dotenv()
 
@@ -35,61 +37,66 @@ HOMEWORK_VERDICTS = {
 }
 
 
-def check_tokens():
+def check_tokens() -> bool:
     """Проверяет наличие необходимых переменных окружения."""
     envs = {'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
             'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
             'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID}
-    errors = 0
+    error = 0
     for env in envs:
         if envs[env] is None:
             logging.critical('Отсутствует обязательная '
                              f'переменная окружения: {env}')
-            errors += 1
-    if errors > 0:
+            error = 1
+    if error == 1:
         return False
     return True
 
 
-def send_message(bot, message):
+def send_message(bot: telegram.Bot, message: str) -> None:
     """Отправляет сообщение в Телеграмм."""
+    logging.info('начата отправка сообщения')
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logging.debug(f'Удачная отправка сообщения: {message}')
-    except TelegramError as error:
+    except telegram.TelegramError as error:
         logging.error(f'Ошибка при отправке сообщения в Telegram: {error}')
 
 
-def get_api_answer(timestamp):
+def get_api_answer(timestamp: int) -> dict:
     """Получает ответ API."""
     try:
         payload = {'from_date': int(timestamp)}
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
+        if response.status_code >= 500:
+            raise requests.RequestException(
+                'Эндпоинт недоступен. Код ответа API: '
+                f'{response.status_code}')
         if response.status_code >= 400:
-            if response.status_code >= 500:
-                raise requests.RequestException(
-                    'Эндпоинт недоступен. Код ответа API: '
-                    f'{response.status_code}')
             raise requests.RequestException(
                 'Сбой при запросе к эндпоинту. Код ответа API: '
                 f'{response.status_code}')
-        return response.json()
     except requests.RequestException as error:
-        raise RuntimeError(error)
+        raise InterceptRequestException(error)
+    try:
+        response_json = response.json()
+        return response_json
+    except JSONError:
+        raise ('JSON не может быть сериализован')
 
 
-def check_response(response):
+def check_response(response: dict) -> None:
     """Проверяет правильность формата ответа API."""
     if not isinstance(response, dict):
-        raise TypeError('в ответе API структура данных не словарь')
+        raise APITypeError('в ответе API структура данных не словарь')
     if 'homeworks' not in response:
-        raise KeyError('в ответе API домашки нет ключа "homeworks"')
+        raise APIKeyError('в ответе API домашки нет ключа "homeworks"')
     if not isinstance(response['homeworks'], list):
         raise TypeError('в ответе API домашки под ключом `homeworks` '
                         'данные приходят не в виде списка')
 
 
-def parse_status(homework):
+def parse_status(homework: dict) -> str:
     """Определяет статус домашней работы."""
     global verdict
     if 'homework_name' not in homework:
@@ -105,7 +112,7 @@ def parse_status(homework):
     return None
 
 
-def log_error(error, bot):
+def log_error(error: Exception, bot: telegram.Bot) -> None:
     """Логирует ошибку и при необходимости отправляет сообщение о ней."""
     logging.error(error)
     global mistake
@@ -115,7 +122,7 @@ def log_error(error, bot):
         send_message(bot, message_mistake)
 
 
-def main():
+def main() -> int:
     """Основная логика работы бота."""
     if not check_tokens():
         return 1
@@ -125,7 +132,6 @@ def main():
         try:
             response = get_api_answer(timestamp)
             check_response(response)
-            timestamp = response.get('current_date')
             if len(response['homeworks']) == 0:
                 logging.debug('нет ни одного домашнего задания на проверке')
                 continue
@@ -134,6 +140,8 @@ def main():
             if message is None:
                 logging.debug('отсутствие в ответе новых статусов')
                 continue
+            if HOMEWORK_VERDICTS['approved'] in message:
+                timestamp = response.get('current_date')
             send_message(bot, message)
         except KeyboardInterrupt:
             return 0
