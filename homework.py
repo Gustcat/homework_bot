@@ -128,20 +128,18 @@ def main():
             timestamp = response.get('current_date')
             if len(response['homeworks']) == 0:
                 logging.debug('нет ни одного домашнего задания на проверке')
-                time.sleep(RETRY_PERIOD)
                 continue
             homework = response.get('homeworks')[0]
             message = parse_status(homework)
             if message is None:
                 logging.debug('отсутствие в ответе новых статусов')
-                time.sleep(RETRY_PERIOD)
                 continue
             send_message(bot, message)
-            time.sleep(RETRY_PERIOD)
         except KeyboardInterrupt:
             return 0
         except Exception as error:
             log_error(error, bot)
+        finally:
             time.sleep(RETRY_PERIOD)
 
 
